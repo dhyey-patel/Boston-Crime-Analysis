@@ -1,0 +1,465 @@
+---
+title: "Boston Crime Analysis 1"
+output: html_notebook
+---
+
+This is the First Notebook of the 2 notebooks that we have.
+
+The inital goal that we have when looking at the data set is to predict the number of officers (police force) that need to on duty on a given day with our forecast. We would like to be accurate and detailed. We want to say by the end that there will be X number of officers need on duty on day X.
+
+
+In this notebook we will be doing some inital cleaning of the data to do Explorotory Data Analysis
+Based on the EDA we will look to see how we should further analyze the data 
+
+
+Start by loading the needed libraries
+```{r}
+library(tidyverse)
+library(dplyr)
+library(chron)
+library(mice)
+library(forecast)
+library(Metrics)
+library(nnfor)
+```
+
+
+
+```{r}
+data <- data.frame(read.csv("crime.csv", header = TRUE, na.strings=c("")))
+head(data)
+```
+Taking an inital look at the data we can see that there are a lot of good columns that we can potentially analyze like Offense code, offense code group, district, location, date and time
+
+
+
+Initial Cleaning 
+```{r}
+#Change the type of the variables 
+data$OFFENSE_CODE <- as.factor(data$OFFENSE_CODE)
+data$OFFENSE_CODE_GROUP <- as.factor(data$OFFENSE_CODE_GROUP)
+data$DISTRICT <- as.factor(data$DISTRICT)
+data$REPORTING_AREA <- as.factor(data$REPORTING_AREA)
+data$MONTH <- as.factor(data$MONTH)
+data$DAY_OF_WEEK <- as.factor(data$DAY_OF_WEEK)
+data$HOUR <- as.factor(data$HOUR)
+data$temp_date <- data$OCCURRED_ON_DATE  # Dummy Variable for Date so we can extract just the date from the final 
+data$OCCURRED_ON_DATE <- as.chron(data$OCCURRED_ON_DATE)
+
+# Extract just the date from the column 
+data <- data %>% separate(temp_date, c("DATE", "TIME"), " ")
+data$DATE <- as.Date(data$DATE)
+
+
+#for the shooting variable if it is not Y it is N, so we need to set them to N
+data$SHOOTING[is.na(data$SHOOTING)] <- "N"
+data$SHOOTING <- as.factor(data$SHOOTING)
+summary(data)
+```
+
+
+```{r}
+# calculate the percentage of missing data per variable
+p_missing <- function(x) {sum(is.na(x))/length(x)*100}
+apply(data, 2, p_missing)
+```
+Looking at the missing data there is not a lot of data missing, lat and long are missing a small amount of data but there is no value in imputing the data so that is not something, additionally the district is not missing for .55% of the data so if we want to analyze based on district (probably something we should do), we will analyze based on district.
+
+
+
+Take a further look at the missing data
+```{r}
+missing_data <- md.pattern(data)
+```
+
+Hard to read the text in the graphic so to take a deeper look we will look at the specific chart 
+
+```{r}
+missing_data <- as.data.frame(missing_data)
+missing_data
+```
+We have 296K complete data points, which is a significant amount of data. This graph shows the combination of missing data, but its not relavent for what we are going to be doing as all the important variables are not missing  data points. 
+
+
+
+## EDA to visualize data
+
+There is not a lot of seasonality between week days of the week when considering crime count. Sunday has the lowest occurences of crime, meanwhile Friday is the highest. The rest of the days are very similar and do not see significant seasonality.
+
+Crime Count based on day of the week
+```{r}
+day_plot <- data %>% select(DAY_OF_WEEK) %>% group_by(DAY_OF_WEEK) %>% summarize(COUNT=n())
+ggplot(day_plot, aes(x = DAY_OF_WEEK, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+
+The crime count based on months seems to have more seasonality compared to days of the week with the most crime occuring during the 6th, 7th, and 8th month of the year. The other months are very similar in terms of crime occurences grouped by days of week. Overall, apart from the 6th, 7th and 8th month there is not a lot of seasonality.
+
+Crime Count based on month
+```{r}
+month_plot <- data %>% select(MONTH) %>% group_by(MONTH) %>% summarize(COUNT=n())
+ggplot(month_plot, aes(x = MONTH, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+
+Based on offence code group crime occurences, motor vehicle responses, medical assistance, as well as laarceny are the highest crime occurences over the three year period of data.
+
+Crime Count based on offense code group
+```{r fig.height=10}
+offense_plot <- data %>% select(OFFENSE_CODE_GROUP) %>% group_by(OFFENSE_CODE_GROUP) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(offense_plot, aes(x = OFFENSE_CODE_GROUP, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") + coord_flip()
+```
+
+
+Based on district, it is clear that districts B2, D4, and C11 have the most amount of crime occurences. B3 and A1 also have a higher amount of crime occurences compared to other districts. There is a much lower crime occurence rate in the other districts. So far, looking at districts and crime occurences provides us with the most seasonality.
+
+Crime Count based on District
+```{r}
+district_plot <- data %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+
+
+
+### 2015 EDA
+
+Crime Count based on day of the week in 2015
+```{r}
+day_plot2015 <- data %>% filter(data$YEAR==2015) %>% select(DAY_OF_WEEK) %>% group_by(DAY_OF_WEEK) %>% summarize(COUNT=n())
+ggplot(day_plot2015, aes(x = DAY_OF_WEEK, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+```{r fig.height=10}
+district_plot <- data %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+Crime Count based on month in 2015
+```{r}
+month_plot2015 <- data %>% filter(data$YEAR==2015) %>% select(MONTH) %>% group_by(MONTH) %>% summarize(COUNT=n())
+ggplot(month_plot2015, aes(x = MONTH, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on offense code group in 2015
+```{r fig.height=10}
+offense_plot2015 <- data %>% filter(data$YEAR==2015) %>% select(OFFENSE_CODE_GROUP) %>% group_by(OFFENSE_CODE_GROUP) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(offense_plot2015, aes(x = OFFENSE_CODE_GROUP, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") + coord_flip()
+```
+
+Crime Count based on District in 2015
+```{r}
+district_plot2015 <- data %>% filter(data$YEAR==2015) %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot2015, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+### 2016 EDA
+
+Crime Count based on day of the week in 2016
+```{r}
+day_plot2016 <- data %>% filter(data$YEAR==2016) %>% select(DAY_OF_WEEK) %>% group_by(DAY_OF_WEEK) %>% summarize(COUNT=n())
+ggplot(day_plot2016, aes(x = DAY_OF_WEEK, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on month in 2016
+```{r}
+month_plot2016 <- data %>% filter(data$YEAR==2016) %>% select(MONTH) %>% group_by(MONTH) %>% summarize(COUNT=n())
+ggplot(month_plot2016, aes(x = MONTH, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on offense code group in 2016
+```{r fig.height=10}
+offense_plot2016 <- data %>% filter(data$YEAR==2016) %>% select(OFFENSE_CODE_GROUP) %>% group_by(OFFENSE_CODE_GROUP) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(offense_plot2016, aes(x = OFFENSE_CODE_GROUP, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") + coord_flip()
+```
+
+Crime Count based on District in 2016
+```{r}
+district_plot2016 <- data %>% filter(data$YEAR==2016) %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot2016, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+
+
+
+### 2017 EDA
+
+Crime Count based on day of the week in 2017
+```{r}
+day_plot2017 <- data %>% filter(data$YEAR==2017) %>% select(DAY_OF_WEEK) %>% group_by(DAY_OF_WEEK) %>% summarize(COUNT=n())
+ggplot(day_plot2017, aes(x = DAY_OF_WEEK, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on month in 2017
+```{r}
+month_plot2017 <- data %>% filter(data$YEAR==2017) %>% select(MONTH) %>% group_by(MONTH) %>% summarize(COUNT=n())
+ggplot(month_plot2017, aes(x = MONTH, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on offense code group in 2017
+```{r fig.height=10}
+offense_plot2017 <- data %>% filter(data$YEAR==2017) %>% select(OFFENSE_CODE_GROUP) %>% group_by(OFFENSE_CODE_GROUP) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(offense_plot2017, aes(x = OFFENSE_CODE_GROUP, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") + coord_flip()
+```
+
+Crime Count based on District in 2017
+```{r}
+district_plot2017 <- data %>% filter(data$YEAR==2017) %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot2017, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+
+
+
+## 2018 EDA
+
+Crime Count based on day of the week in 2018
+```{r}
+day_plot2018 <- data %>% filter(data$YEAR==2018) %>% select(DAY_OF_WEEK) %>% group_by(DAY_OF_WEEK) %>% summarize(COUNT=n())
+ggplot(day_plot2018, aes(x = DAY_OF_WEEK, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on month in 2018
+```{r}
+month_plot2018 <- data %>% filter(data$YEAR==2018) %>% select(MONTH) %>% group_by(MONTH) %>% summarize(COUNT=n())
+ggplot(month_plot2018, aes(x = MONTH, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") 
+```
+
+Crime Count based on offense code group in 2018
+```{r fig.height=10}
+offense_plot2018 <- data %>% filter(data$YEAR==2018) %>% select(OFFENSE_CODE_GROUP) %>% group_by(OFFENSE_CODE_GROUP) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(offense_plot2018, aes(x = OFFENSE_CODE_GROUP, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3") + coord_flip()
+```
+
+Crime Count based on District in 2018
+```{r}
+district_plot2018 <- data %>% filter(data$YEAR==2018) %>% select(DISTRICT) %>% group_by(DISTRICT) %>% summarize(COUNT=n()) %>% arrange(desc(COUNT)) 
+
+ggplot(district_plot2018, aes(x = DISTRICT, y = COUNT)) + geom_bar(stat = "identity", fill = "cyan3")
+```
+
+
+When looking at the crime occurences by month, day of week, offence code group, and district each year, instead of overall, there is nothing very surprising. Sunday tends to be the lowest occurences of crime each year and Friday tends to be the highest. In terms of months, crime seems to be the highest in summer months year over year. Considering that there is seasonality on a weekly basis and we want to look at specific data we should keep frequency  = 7 in the time series to analyze weekly data.
+When looking at offence code groups, the most frequent crimes also remain vehicle motor responses, medical assitance, as well as larceny. The districts that have the most crime year over year remain B2, C11, D4. The most seasonality seen in each year is when looking at occurences by district. Based on the EDA analysis it would make sense the group by district as there is a lot of flactuation between districts. It also makes sense to group by offense code group as it significantly varies based on the offense code group. That would be too many groupings especially when paired with the district. We should also group by the district because each location will require a different number of officers, and it makes sense to group by offense code because some offenses require more time when compared to others. To do that we can group the code group types into 3 priorities of High, Medium and Low
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Time Series Analysis 
+
+From the EDA it makes a lot of sense to look at the seaonality on a day of the week basis as there are some days with significantly less crimes. So the first thing that we need to do is to convert the data into some sort of time series data to do further analysis
+
+The purpose of this analysis on the entire dataset is to see what model works best when we split based on district and priority. We will assume that the split data will act similar to the entire dataset and as a result the model that works best on the entire dataset will also work best when we split. The split will require the training 36 groupings' models so it doesnt make sense computationally to run all three of the models for each district and priority grouping. 
+
+As the dataset is not in order based on the date we should probably order it
+
+```{r}
+data = data[order(data$OCCURRED_ON_DATE),]
+```
+
+
+Do a count of the number of crimes commited each day
+
+```{r}
+tab <- table(cut(data$DATE, 'day'))
+daily_crime_count <- data.frame(DATE=format(as.Date(names(tab)), '%d/%m/%Y'), CRIME_COUNT=as.vector(tab))
+daily_crime_count
+```
+
+The last day's data is incomplete so we must drop it
+```{r}
+n<-dim(daily_crime_count)[1]
+daily_crime_count<-daily_crime_count[1:(n-1),]
+```
+
+
+Create a time series object and look at it 
+```{r}
+ts_crimes_weekly <- ts(daily_crime_count$CRIME_COUNT, frequency=7)
+plot(ts_crimes_weekly)
+```
+The data definately follows some sort of yearly seasonality (X axis is number of weeks, so 52 weeks in a year). There are also some outliers throughout the data, but we do not need to worry about it as the models we are running are robust and will not be sckewed significantly by 5-10 outliers
+
+
+
+
+
+```{r}
+crime_decomposed = decompose(ts_crimes_weekly, type="multiplicative")
+plot(crime_decomposed)
+```
+Looking at the Decomposed ts we can see that the randomness varies a lot, sometimes even 40% (only for the outliers). This shows us there are factors outside of trend and seasonality that have a significant impact on the crimes each day.
+
+
+Do a train test split
+```{r}
+training.percent = 0.80
+nTrain <- round(length(ts_crimes_weekly)*training.percent)
+nTest <- round(length(ts_crimes_weekly) - nTrain)
+
+#We only want to forecast 14 days so we should set nTest to 14 and just train with the rest and check error on that
+#We only want 14 days because we want to generate useful business insight about how many police officers need to be hired per day per district, and shifts likely come out 14 days in advance
+nTest2 <- 14
+nTrain2 <- dim(daily_crime_count)[1] - nTest2
+
+
+train.ts <- ts(head(daily_crime_count$CRIME_COUNT, nTrain2), frequency = 7)
+testing.ts <- ts(tail(daily_crime_count$CRIME_COUNT, nTest2), start = nTrain2/7 + 1,frequency = 7)
+```
+
+### Holt's Winter Model
+
+Train the Holt's Winter Model
+```{r}
+train.hw <- hw(train.ts)
+summary(train.hw)
+```
+Looking at the MAPE it is 8% which is better than I originally thought as there was a lot of randomness, the MAE is 20 which is not too bad and it is within reason for the forecast
+
+
+Plot the model to see how it performed 
+```{r}
+plot(train.ts)
+lines(train.hw$fitted, col="red")
+```
+The predictions look fairly good but they are not able to factor in the significant randomness that occurs
+
+
+Forecast using the hw method
+```{r}
+train_fcast.hw <- forecast(train.hw, h=nTest2)
+summary(train_fcast.hw)
+```
+
+Plot the forecast and the actual to see how the forecast performs 
+```{r}
+plot(train_fcast.hw)
+lines(testing.ts, col="red")
+```
+
+```{r}
+rmse.hw = rmse(testing.ts, train_fcast.hw$mean)
+rmse.hw
+```
+
+```{r}
+mape.hw = mape(testing.ts, train_fcast.hw$mean)
+mape.hw
+```
+
+The RMSE and MAPE for the forecast is lower than the summary shown in the ets, the reason for that is likely the time period that we are forecasting(train test split ratio), we are only forecasting 14 days which is likely shorter than what they are forecasting for. As we know the error increases as the forecast time increases
+
+Now that we have a MAPE and a RMSE for the Holt Winter's model based on a 14 day forecast which is what we will be projecting to generate an useful insight, we can try to create an Arima Model to see what will generally work better
+
+
+### Arima Model
+
+Train the arima model
+```{r}
+train.arima <- auto.arima(train.ts)
+summary(train.arima)
+```
+The MAPE for the arima is 8.75% which is also not too bad, but it is worse than the hw model which is intersting as arima generally performs better. The MAE is 22.8 which is also not too bad and within reason, we do not need to predict the exact number of crimes
+
+
+Plot the model to see how it performed 
+```{r}
+plot(train.ts)
+lines(train.arima$fitted, col="red")
+```
+This model is not as good as the hw model at factoring in the random spikes in data, that is probably the reason that hw model had a lower MAPE
+
+
+Forecast using the arima model
+```{r}
+train_fcast.arima <- forecast(train.arima, h=nTest2)
+summary(train_fcast.arima)
+```
+Plot the forecast
+```{r}
+plot(train_fcast.arima)
+lines(testing.ts, col="red")
+```
+The actual seems to be more volatile the what was forecasted which makes sense as we generally forecast closer to the average
+
+```{r}
+rmse.arima = rmse(testing.ts, train_fcast.arima$mean)
+rmse.arima
+```
+
+```{r}
+mape.arima = mape(testing.ts, train_fcast.arima$mean)
+mape.arima
+```
+
+Once again the RMSE and MAPE for the forecast is lower than the summary shown in the arima, the reason for that is likely the time period that we are forecasting (train test split ratio), we are only forecasting 14 days which is likely shorter than what they are forecasting for. As we know the error increases as the forecast time increases
+
+
+The RMSE and the MAPE are slightly better for the Holt Winter's Model. We have one more potential model that we can build which is a neural network model so we can try that now
+
+
+### Neural Network Model
+
+Train the neural network (nn) model
+```{r}
+train.nn <-  elm(train.ts)
+print(train.nn)
+```
+
+
+plot the nn model against the actual
+```{r}
+plot(train.ts)
+lines(train.nn$fitted, col="red")
+```
+The elm model seems to be predicting the random flactuations more accurately when compared to the hw and arima models 
+
+Forecast using the nn model
+```{r}
+train_fcast.nn <- forecast(train.nn, h=nTest2)
+summary(train_fcast.nn)
+```
+Intersetingly the RMSE and the MAPE for this model are higher than the hw and the arima model which means even though it looks like it is predicting the random flactuations it is not accurate at predicting when they will occur. This is probably not good when looking at our use case, we would not like a predicted flactuation when one does not occur, that will lead to the force being under or over staffed. 
+
+Plot the forecast
+```{r}
+plot(train_fcast.nn)
+lines(testing.ts, col="red")
+```
+
+```{r}
+rmse.nn = rmse(testing.ts, train_fcast.nn$mean)
+rmse.nn
+```
+
+```{r}
+mape.nn = mape(testing.ts, train_fcast.nn$mean)
+mape.nn
+```
+
+The nn model predicts better than the arima model based on the train test split, but still worse than the hw model. Going foreward when we do the split based on the district and the priority of the crime we will use the hw model, as it has the lowest error rates on the given timeline prediction that we want
+
+

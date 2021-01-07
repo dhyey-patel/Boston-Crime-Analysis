@@ -1,0 +1,308 @@
+Boston Crime Analysis Part Two
+
+In this notebook, we conduct analysis on our Boston crime data, cleaning, forecasting, and making actionable recommendations for the Boston police department.
+
+```{r}
+  library(tidyverse)
+  library(dplyr)
+  library(chron)
+  library(mice)
+  library(forecast)
+  library(Metrics)
+  library(nnfor)
+```
+
+We start off by importing the Boston crime data and spliting it by both district and crime type. This allows us to use it easily in our analysis
+
+```{r}
+  rawData <- read.csv("crime.csv", header = TRUE) #Read data
+  rawDataAsDataFrame = data.frame(rawData) #Convert to Data Frame, so we can subdivide
+  rawDataSplitByDistrict <- split(rawDataAsDataFrame,rawDataAsDataFrame$DISTRICT) #Split Data Frame values in district column
+  rawDataSplitByDistrict <- rawDataSplitByDistrict[-1] #Drop blanks (first index of list)
+  rawDataSplitByDistrictAndCrime <- vector() #Initialize empty list
+  for(district in rawDataSplitByDistrict){ #Iterate across districts and split each district by crime codes
+    temp <- split(district, district$OFFENSE_CODE_GROUP)
+    rawDataSplitByDistrictAndCrime <-append(rawDataSplitByDistrictAndCrime, temp,after=length(rawDataSplitByDistrictAndCrime))
+  }
+```
+
+After splitting the raw data, we setup a config file that allows us to group the crimes in various ways. This allowed us some flexibility in how we analyzed the data. In the end, we decided the most important groupings for us to use were based on the priority of officer response. The details for what we put in each bracket can be found in the config file (first row high, second row mid, third row low), but we essentially based it around the importance that an officer responds immediately.
+
+Our rationale for this was that it is most important to know the quantity and position of high priority crimes as these are the crimes where early officer arrival can result in reduced violence and injury, thus improving policing outcomes. Similarly quick response to mid crimes will improve policing outcomes to a lesser extent, and quick response to low crimes is generally less important. 
+
+After the crimes are grouped into lists, a quick for loop is used to merge those lists into dataframes.
+
+```{r}  
+  
+  configFile <- read.csv("mergeConfigs.txt", header=FALSE)
+  
+  groupingsToAnalyze <- matrix(list(),length(configFile[,1])+1, ncol =2) #Initialize matrix that will hold the groupings and results (rows for groupings, results pairs -- col 1 for groups, col 2 for results)
+  groupingsToAnalyze[[1,1]] <- rawDataSplitByDistrictAndCrime #Setup List that we will analyze
+
+  newGrouping <-list()
+  
+    for(i in 1:length(configFile[,1])){
+      newGrouping <-list()
+      for(district in rawDataSplitByDistrict){
+      group<- configFile[i,]
+      subgrouping <- list()
+      for(category in group){
+        
+        thisCrimeGroup <- split(district, district$OFFENSE_CODE_GROUP)
+        for(j in 1:length(thisCrimeGroup)){
+          elem<-thisCrimeGroup[j]
+          name<-names(thisCrimeGroup)[j]
+          if(name==category){
+            subgrouping <- append(subgrouping,elem,after=length(subgrouping))
+
+            break
+          }
+        }
+        
+      }
+     newGrouping[length(newGrouping)+1] <- list(subgrouping)
+      }
+    groupingsToAnalyze[[i+1,1]] <- newGrouping
+  } #Group Dataframes
+  
+  
+    for(i in 1:length(configFile[,1])+1){
+      grouping <- groupingsToAnalyze[i,1][[1]]
+      for(j in 1:length(grouping)){
+        mergeList <- grouping[[j]]
+        mergeFrame <- mergeList[[1]]
+        for(k in 2:length(mergeList)){
+          mergeFrame <- rbind(mergeFrame,mergeList[[k]])
+        }
+        grouping[[j]] <- mergeFrame
+      }
+      groupingsToAnalyze[i,1][[1]] <- grouping
+    } #Merge Grouped Dataframes
+  
+  
+  
+```
+
+
+Here is where we actually forecast crimes. We forecast out two weeks using a seven day seasonality to control for daily variance. The models used were tested previously during our EDA stage to determine what would be the most accurate. Avoiding training and testing here trims down on runtimes, making our code more efficient. We decided to go with a Holt-Winter model as it was seemingly the most accurate forecast. 
+
+The way the for loop is structured, along with the previous block of code allows for any number of arbitrarily defined groups from the config file to be analyzed which would make the next steps of perfecting the forecasting model easier, particularly if we decided to add more categories.
+
+
+```{r}  
+all_models <- c()
+
+for(groupResultPair in 2:nrow(groupingsToAnalyze)){ #Iteratre through groups in matrix
+    currentTestGrouping <- groupingsToAnalyze[[groupResultPair,1]] #Grab group out of group-result pair
+    results <- list()
+    for(data in currentTestGrouping){
+      
+
+      data$temp_date <- data$OCCURRED_ON_DATE
+      data <- data %>% separate(temp_date, c("DATE", "TIME"), " ")
+      data$DATE <- as.Date(data$DATE)
+      data$OCCURRED_ON_DATE <- as.chron(data$OCCURRED_ON_DATE)
+      data = data[order(data$OCCURRED_ON_DATE),]
+      
+      tab <- table(cut(data$DATE, 'day'))
+      daily_crime_count <- data.frame(DATE=format(as.Date(names(tab)), '%d/%m/%Y'),CRIME_COUNT=as.vector(tab))
+      n<-dim(daily_crime_count)[1]
+      daily_crime_count<-daily_crime_count[1:(n-1),]
+      
+      ts_crimes_weekly <- ts(daily_crime_count$CRIME_COUNT, frequency=7)
+      
+      nTrain <- length(ts_crimes_weekly)
+      train.ts <- ts(head(daily_crime_count$CRIME_COUNT, nTrain), frequency = 7)
+      
+      
+      train.hw <- hw(train.ts)
+      train_fcast.hw <- forecast(train.hw, h=14)
+      
+      all_models[length(all_models)+1] <- list(train.hw)
+      
+      results[length(results)+1] <- list(train_fcast.hw)
+    }
+    groupingsToAnalyze[[groupResultPair,2]] <-results
+    
+  }
+```
+
+Here, we plot all of our forecasts to see visually how they perform. Some are certainly better than others. Generally, it seems like the mean value of our forecast is not a great projector, but this is fairly unimportant, as policing is a plan for the worst, hope for the best industry. For this reason, we base our recommendations on the 95% upper limit of our forecasts which appear much more accurate. 
+
+The major factor in limiting the accuracy of our models is the sheer amount of randomness we see. Some days there are zero crimes in a district, while some days there are several. This could be controlled somewhat by increasing the breadth of our high/mid/low categorizations, but this would be to the detriment of our efforts to optimize policing. 
+
+Another factor that could improve our models is looking at different types of seasonality. Seasons (i.e. fall, winter, spring, summer) are typically better correlated with crime levels than day of the week; however looking at this would be to the detriment of our efforts to improve predictive policing -- it's great to know what crime is going to happen over the whole summer, but that doesn't necessarily help you know where to staff police officers. 
+
+```{r}
+
+for (i in 6:8){
+  for (j in 1:12){
+    title = ""
+    if (i == 6){
+      title <- paste(title, "High Priority ")
+    } else if(i == 7){
+      title <- paste(title, "Medium Priority ")
+    } else if(i == 8){
+      title <- paste(title, "Low Priority ")
+    }
+    if (j == 1){
+      title <- paste(title, "District A1")
+    } else if(j == 2){
+      title = paste(title, "District A15")
+    } else if(j == 3){
+      title <- paste(title, "District A7")
+    } else if(j == 4){
+      title <- paste(title, "District B2")
+    } else if(j == 5){
+      title <- paste(title,  "District B3")
+    } else if(j == 6){
+      title <- paste(title,  "District C11")
+    } else if(j == 7){
+      title <- paste(title, "District C6")
+    } else if(j == 8){
+      title <- paste(title, "District D14")
+    } else if(j == 9){
+      title <- paste(title, "District D4")
+    } else if(j == 10){
+      title <- paste(title, "District E13")
+    } else if(j == 11){
+      title <- paste(title, "District E18")
+    } else if(j == 12){
+      title <- paste(title, "District E5")
+    }
+    plot(groupingsToAnalyze[[i]][[j]], main = title)
+    lines(groupingsToAnalyze[[i]][[j]]$fitted, col=4)
+  }
+}
+```
+
+With the results in mind, we now take our forecasts and attempt to turn them into actionable recommendations. The first four variables affect the recommendations heavily, and if this model is put into practice, these should be altered iteratively by the police department based on policing outcomes. For example, if this were to lead to the underallocation of officers to high priority crime areas, the weight could be raised, or if officers on average are more or less efficient than 5 crimes, this could also be adjusted.
+
+The weights we chose were arbitrary based on the differing priorities, while the crimes per officer figure came from a few assumptions, namely:
+
+Response teams of 2
+Shift lengths of 10 hours
+Average crime resolution time of 1 hour
+
+To develop these actionable recommendations, we use the assigned weights and iterate through the upper 95% confidence interval of our forecasts, multiplying by the appropriate weight and tallying the results to get a totalExpectedCrime figure weighted based on what types of crime are expected.
+
+We also find an unweighted figure which is used to calculate total officers that need to be staffed tomorrow.
+
+After this, we create a 12x5 matrix. The rows in this matrix are the districts, while the columns are the names of the district, the total percentage of the force we recommend Boston allocate in said district, then the total figure broken out into high priority response, mid priority response, and low priority response. 
+
+The percentages allocated to high, mid, and low priorities not only shed insight into why officers are being put where they are, but also what equipment officers should be sent into the field with, as it is likely that the city has a policy of more heavily arming officers going into more dangerous situations.
+
+While we project out two weeks, since accuracy is crucial in these staffing decisions, we have chosen to only provide recommendations one day out. With more time we would look to further perfect out model to feel comfortable making staffing recommendations further out. 
+
+
+```{r}
+highPriorityWeight = 5
+midPriorityWeight = 3
+lowPriorityWeight = 1
+crimesPerOfficer = 5
+
+totalExpectedCrimes = 0
+totalExpectedCrimesUnweighted = 0
+for(i in 1:12){
+  totalExpectedCrimes = totalExpectedCrimes + (all_models[[i]]$upper[15]*highPriorityWeight)
+  totalExpectedCrimesUnweighted = totalExpectedCrimesUnweighted + all_models[[i]]$upper[15]
+}
+for(i in 13:24){
+  totalExpectedCrimes = totalExpectedCrimes + (all_models[[i]]$upper[15]*midPriorityWeight)
+  totalExpectedCrimesUnweighted = totalExpectedCrimesUnweighted + all_models[[i]]$upper[15]
+}
+for(i in 25:36){
+  totalExpectedCrimes = totalExpectedCrimes + (all_models[[i]]$upper[15]*lowPriorityWeight)
+  totalExpectedCrimesUnweighted = totalExpectedCrimesUnweighted + all_models[[i]]$upper[15]
+}
+
+print(paste("Tomorrow, our models predict with 95% confidence ", round(totalExpectedCrimesUnweighted,0)," crimes of varying severity", sep=""))
+```
+
+
+```{r}
+print(paste("At the expected efficiency of ",crimesPerOfficer," crimes per officer on average, this will require a force of ",ceiling(totalExpectedCrimesUnweighted/crimesPerOfficer)," officers"))
+```
+
+
+```{r}
+recommendations <- matrix(,12,5)
+recommendations[,1] <- c("A1","A7","A15","B2","B3","C6","C11","D4","D14","E5","E13","E18")
+totalForceAllocation = 0
+
+
+
+for(i in 2:nrow(groupingsToAnalyze)){
+  grouping<-groupingsToAnalyze[i,1][[1]]
+  forecasts<-groupingsToAnalyze[i,2][[1]]
+  for(j in 1:length(grouping)){
+    thisGroup <- grouping[[j]]
+    thisForecast<-forecasts[[j]]
+    colIndex = 0
+    
+    if(i==2){
+      colIndex = 3
+      multiplier = highPriorityWeight
+    }else if(i==3){
+      colIndex = 4
+      multiplier = midPriorityWeight
+    }else if(i==4){
+      colIndex = 5
+      multiplier = lowPriorityWeight
+    }
+    
+    districtName = thisGroup[1,]$DISTRICT
+    rowIndex = 0
+    for(rw in 1:nrow(recommendations)){
+      if(districtName==recommendations[rw,1]){
+        rowIndex = rw
+      }
+    }
+    
+    recommendations[rowIndex,colIndex] = round(((thisForecast$upper[15]*multiplier)/totalExpectedCrimes)*100,2)
+    totalForceAllocation = totalForceAllocation + ((thisForecast$upper[15]*multiplier)/totalExpectedCrimes)*100
+    
+    
+    
+  }
+}
+
+
+for(i in 1:nrow(recommendations)){
+  recommendations[i,2] = as.double(recommendations[i,3])+as.double(recommendations[i,4])+as.double(recommendations[i,5])
+}
+colnames(recommendations) = c("District","Total Percent","High Priority Percent","Mid Priority Percent","Low Priority Percent")
+print("Our recommended force allocation percentages can be found below: ")
+```
+
+
+```{r}
+recommendations
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
